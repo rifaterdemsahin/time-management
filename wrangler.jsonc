@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pexabo-calendar-backup",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-22",
+  "vars": {
+    "CALENDAR_ID": "info@pexabo.com",
+    "CALENDAR_TZ": "Europe/London"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "BACKUPS",
+      "id": "5e4b048839dc44bd93f5bc7762f04867"
+    }
+  ],
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.html"],
+      "fallthrough": true
+    },
+    {
+      "type": "Text",
+      "globs": ["**/*.css"],
+      "fallthrough": true
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

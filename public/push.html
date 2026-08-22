@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Push · Pexabo Calendar Backup</title>
+  <meta name="description" content="Backup and manage Google Calendar events for info@pexabo.com from the Cloudflare edge. REST + MCP command console.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <nav class="nav-bar">
+      <a class="nav-brand" href="/">📅 Pexabo Calendar</a>
+      <div class="nav-links">
+        <a class="nav-link active" href="/push">Push</a>
+        <a class="nav-link" href="/explainer">Explainer</a>
+        <a class="nav-link" href="/architecture">Architecture</a>
+        <a class="nav-link" href="/permissions">Permissions</a>
+      </div>
+    </nav>
+
+    <section class="card">
+      <p class="kicker">Live edge console</p>
+      <h1>Backup Google Calendar for info@pexabo.com</h1>
+      <p class="lede">Pull events from the Pexabo Team calendar, snapshot them into Cloudflare KV, and drive the same operations through REST or MCP JSON-RPC. No tokens live in git — the Worker authenticates with a service account injected at deploy time from Azure Key Vault.</p>
+      <div class="hero-row" id="badges">
+        <span class="badge">Calendar · info@pexabo.com</span>
+        <span class="badge">Free tier · 100k req/day</span>
+      </div>
+    </section>
+
+    <div class="grid-3" id="stats">
+      <div class="stat"><div class="label">Access role</div><div class="value" id="stat-role">…</div><div class="sub" id="stat-sa">service account</div></div>
+      <div class="stat"><div class="label">Upcoming (14d)</div><div class="value" id="stat-count">…</div><div class="sub" id="stat-window">loading window</div></div>
+      <div class="stat"><div class="label">KV snapshots</div><div class="value" id="stat-backups">…</div><div class="sub" id="stat-last">no backup yet</div></div>
+    </div>
+
+    <section class="card">
+      <h2>1. Push a backup</h2>
+      <p class="lede">Snapshots store every event the service account can see (times always; titles only with reader/writer ACL) plus ICS export.</p>
+      <div class="form-row" style="margin-top:1rem">
+        <div class="field"><label for="timeMin">From (ISO)</label><input id="timeMin"></div>
+        <div class="field"><label for="timeMax">To (ISO)</label><input id="timeMax"></div>
+      </div>
+      <div class="actions">
+        <button id="btn-backup" type="button">📦 Backup this window</button>
+        <button class="secondary" id="btn-14" type="button">Next 14 days</button>
+        <button class="secondary" id="btn-90" type="button">Next 90 days</button>
+        <button class="ghost" id="btn-refresh" type="button">↻ Refresh</button>
+      </div>
+      <pre class="log" id="backup-log">Ready.</pre>
+    </section>
+
+    <section class="card">
+      <h2>2. Upcoming events</h2>
+      <p class="lede" id="events-hint">Private events render as Busy while the service account is <code>freeBusyReader</code>. Grant “See all event details” on the Permissions page to unlock titles.</p>
+      <div id="events"></div>
+    </section>
+
+    <section class="card">
+      <h2>3. Snapshots</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Id</th><th>Taken</th><th>Events</th><th>Window</th><th>ACL</th><th></th></tr></thead>
+          <tbody id="backup-rows"><tr><td colspan="6" style="color:var(--muted)">No snapshots yet.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>4. Command studio — API &amp; MCP</h2>
+      <div class="tabs">
+        <button class="tab on" id="tab-api" type="button">REST API</button>
+        <button class="tab" id="tab-mcp" type="button">MCP JSON-RPC</button>
+      </div>
+      <div class="form-row">
+        <div class="field" id="rest-method-wrap"><label for="rest-method">Method</label>
+          <select id="rest-method">
+            <option>GET</option><option>POST</option><option>PATCH</option><option>DELETE</option>
+          </select>
+        </div>
+        <div class="field" style="flex:2"><label for="cmd-path">Path / RPC</label>
+          <input id="cmd-path" value="/api/events">
+        </div>
+      </div>
+      <label for="cmd-body">Body</label>
+      <textarea id="cmd-body" rows="8"></textarea>
+      <div class="actions">
+        <button id="btn-run" type="button">▶ Run command</button>
+        <button class="secondary" id="ex-list" type="button">Example: list</button>
+        <button class="secondary" id="ex-backup" type="button">Example: backup</button>
+        <button class="secondary" id="ex-status" type="button">Example: status</button>
+      </div>
+      <pre class="log" id="cmd-out">Responses appear here.</pre>
+    </section>
+
+    <p class="footer">Edge runtime · V8 isolate · $0/month on the 100,000 req/day Workers free tier.</p>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let mode = "api";
+
+    function isoDays(n) {
+      return new Date(Date.now() + n * 86400000).toISOString();
+    }
+    function setWindow(fromDays, toDays) {
+      $("timeMin").value = isoDays(fromDays);
+      $("timeMax").value = isoDays(toDays);
+    }
+    setWindow(0, 14);
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        headers: { "content-type": "application/json" },
+        ...opts,
+      });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+      return { ok: res.ok, status: res.status, data };
+    }
+
+    function fmtWhen(slot) {
+      if (!slot) return "—";
+      if (slot.date) return slot.date;
+      const d = new Date(slot.dateTime);
+      if (Number.isNaN(d.getTime())) return slot.dateTime;
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    function fmtDay(slot) {
+      const src = slot?.dateTime || slot?.date;
+      const d = new Date(src);
+      if (Number.isNaN(d.getTime())) return "Unknown day";
+      return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    }
+
+    function renderEvents(items) {
+      const root = $("events");
+      if (!items.length) {
+        root.innerHTML = '<p class="lede">No events in this window.</p>';
+        return;
+      }
+      const groups = {};
+      for (const ev of items) {
+        const key = fmtDay(ev.start);
+        (groups[key] ||= []).push(ev);
+      }
+      root.innerHTML = Object.entries(groups).map(([day, list]) => `
+        <div class="event-day">
+          <h3>${day}</h3>
+          ${list.map((ev) => `
+            <div class="event">
+              <time>${fmtWhen(ev.start)} – ${fmtWhen(ev.end)}</time>
+              <div>
+                <div class="title">${ev.summary ? escapeHtml(ev.summary) : "Busy"}</div>
+                <div class="meta">${ev.busy ? "private / freeBusyReader" : escapeHtml(ev.location || ev.status || "")} · <code>${escapeHtml(ev.id.slice(0, 18))}…</code></div>
+              </div>
+              <span class="badge ${ev.busy ? "warn" : "ok"}">${ev.status || "confirmed"}</span>
+            </div>`).join("")}
+        </div>`).join("");
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function renderBackups(list) {
+      const body = $("backup-rows");
+      $("stat-backups").textContent = String(list.length);
+      if (!list.length) {
+        body.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">No snapshots yet. Push a backup above.</td></tr>';
+        return;
+      }
+      $("stat-last").textContent = "last " + new Date(list[0].createdAt).toLocaleString();
+      body.innerHTML = list.map((b) => `<tr>
+        <td><code>${escapeHtml(b.id)}</code></td>
+        <td>${new Date(b.createdAt).toLocaleString()}</td>
+        <td>${b.eventCount}${b.truncated ? "+" : ""}</td>
+        <td class="meta">${new Date(b.timeMin).toLocaleDateString()} → ${new Date(b.timeMax).toLocaleDateString()}</td>
+        <td><span class="badge">${escapeHtml(b.accessRole || "")}</span></td>
+        <td>
+          <button class="ghost" data-view="${escapeHtml(b.id)}" type="button">View</button>
+          <a class="btn ghost" href="/api/backups/${encodeURIComponent(b.id)}.ics">ICS</a>
+        </td>
+      </tr>`).join("");
+      body.querySelectorAll("[data-view]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const r = await api("/api/backups/" + btn.dataset.view);
+          $("cmd-out").textContent = JSON.stringify(r.data, null, 2);
+          window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+        });
+      });
+    }
+
+    async function refresh() {
+      $("stat-window").textContent = new Date($("timeMin").value).toLocaleDateString() + " → " + new Date($("timeMax").value).toLocaleDateString();
+      const [cal, ev, bks] = await Promise.all([
+        api("/api/calendar"),
+        api(`/api/events?timeMin=${encodeURIComponent($("timeMin").value)}&timeMax=${encodeURIComponent($("timeMax").value)}&maxResults=80`),
+        api("/api/backups"),
+      ]);
+      const badges = $("badges");
+      if (cal.ok) {
+        const c = cal.data.calendar;
+        $("stat-role").textContent = c.accessRole;
+        $("stat-sa").textContent = c.serviceAccount;
+        badges.innerHTML = `
+          <span class="badge blue">${escapeHtml(c.summary || c.id)}</span>
+          <span class="badge ${c.canWrite ? "ok" : c.canReadDetails ? "ok" : "warn"}">${escapeHtml(c.accessRole)}</span>
+          <span class="badge">${escapeHtml(c.timeZone || "")}</span>
+          <span class="badge">Edge live</span>`;
+        if (!c.canReadDetails) {
+          $("events-hint").innerHTML = 'Titles are hidden: this Worker currently has <code>freeBusyReader</code>. Share the calendar with the service account as “See all event details” — steps on <a href="/permissions">Permissions</a>.';
+        }
+      } else {
+        $("stat-role").textContent = "error";
+        $("backup-log").textContent = JSON.stringify(cal.data, null, 2);
+      }
+      if (ev.ok) {
+        $("stat-count").textContent = String(ev.data.items.length) + (ev.data.nextPageToken ? "+" : "");
+        renderEvents(ev.data.items);
+      } else {
+        $("stat-count").textContent = "—";
+        $("events").innerHTML = '<pre class="log">' + escapeHtml(JSON.stringify(ev.data, null, 2)) + "</pre>";
+      }
+      if (bks.ok) renderBackups(bks.data.backups || []);
+    }
+
+    $("btn-14").onclick = () => { setWindow(0, 14); refresh(); };
+    $("btn-90").onclick = () => { setWindow(0, 90); refresh(); };
+    $("btn-refresh").onclick = refresh;
+    $("btn-backup").onclick = async () => {
+      $("btn-backup").disabled = true;
+      $("backup-log").textContent = "Pushing snapshot to KV…";
+      const r = await api("/api/backup", {
+        method: "POST",
+        body: JSON.stringify({ timeMin: $("timeMin").value, timeMax: $("timeMax").value }),
+      });
+      $("backup-log").textContent = JSON.stringify(r.data, null, 2);
+      $("btn-backup").disabled = false;
+      await refresh();
+    };
+
+    const restList = { method: "GET", path: "/api/events", body: "" };
+    const restBackup = { method: "POST", path: "/api/backup", body: JSON.stringify({ timeMin: isoDays(0), timeMax: isoDays(14) }, null, 2) };
+    const restStatus = { method: "GET", path: "/api/calendar", body: "" };
+    const mcpList = {
+      method: "POST",
+      path: "/mcp",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "calendar_list_events", arguments: {} } }, null, 2),
+    };
+    const mcpBackup = {
+      method: "POST",
+      path: "/mcp",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "calendar_backup", arguments: {} } }, null, 2),
+    };
+    const mcpStatus = {
+      method: "POST",
+      path: "/mcp",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }, null, 2),
+    };
+
+    function applyExample(ex) {
+      $("rest-method").value = ex.method;
+      $("cmd-path").value = ex.path;
+      $("cmd-body").value = ex.body;
+    }
+
+    $("tab-api").onclick = () => {
+      mode = "api";
+      $("tab-api").classList.add("on");
+      $("tab-mcp").classList.remove("on");
+      $("rest-method-wrap").style.display = "";
+      applyExample(restList);
+    };
+    $("tab-mcp").onclick = () => {
+      mode = "mcp";
+      $("tab-mcp").classList.add("on");
+      $("tab-api").classList.remove("on");
+      $("rest-method-wrap").style.display = "none";
+      applyExample(mcpList);
+    };
+    $("ex-list").onclick = () => applyExample(mode === "mcp" ? mcpList : restList);
+    $("ex-backup").onclick = () => applyExample(mode === "mcp" ? mcpBackup : restBackup);
+    $("ex-status").onclick = () => applyExample(mode === "mcp" ? mcpStatus : restStatus);
+
+    $("btn-run").onclick = async () => {
+      const path = $("cmd-path").value.trim();
+      const method = mode === "mcp" ? "POST" : $("rest-method").value;
+      const body = $("cmd-body").value.trim();
+      $("cmd-out").textContent = "Running…";
+      const r = await api(path, { method, body: body || undefined });
+      $("cmd-out").textContent = JSON.stringify(r.data, null, 2);
+    };
+
+    applyExample(restList);
+    refresh().catch((err) => { $("backup-log").textContent = String(err); });
+  </script>
+</body>
+</html>

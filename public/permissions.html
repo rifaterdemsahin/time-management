@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Permissions · Pexabo Calendar Backup</title>
+  <meta name="description" content="Live check of Grok Google Calendar access boxes against info@pexabo.com — calendar list, view/edit, freebusy, see and download.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <nav class="nav-bar">
+      <a class="nav-brand" href="/">📅 Pexabo Calendar</a>
+      <div class="nav-links">
+        <a class="nav-link" href="/push">Push</a>
+        <a class="nav-link" href="/explainer">Explainer</a>
+        <a class="nav-link" href="/architecture">Architecture</a>
+        <a class="nav-link active" href="/permissions">Permissions</a>
+      </div>
+    </nav>
+
+    <section class="card">
+      <p class="kicker">Live ACL probe</p>
+      <h1>Select what Grok can access</h1>
+      <p class="lede">These four boxes are the Google Calendar grants from Grok’s consent screen. The Worker probes each one against <code>info@pexabo.com</code> right now — not a screenshot, a live API check. <a href="https://calendar.google.com/calendar/u/0/r/settings/calendar/aW5mb0BwZXhhYm8uY29t" target="_blank" rel="noopener">Open calendar sharing ↗</a></p>
+      <div class="hero-row" id="live"></div>
+      <div class="select-all" id="select-all">Checking Select all…</div>
+      <div class="check-list" id="checks">
+        <div class="check-item"><div class="check-mark">⏳</div><div><h3>Running checks</h3><p>Calling Calendar API…</p></div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Are all events in here?</h2>
+      <p class="lede" id="events-verdict">Counting titled events vs busy-only blocks for the next 14 days.</p>
+      <div class="grid-3" id="event-stats"></div>
+      <div style="overflow-x:auto;margin-top:0.8rem">
+        <table>
+          <thead><tr><th>When</th><th>Title</th><th>Visible?</th></tr></thead>
+          <tbody id="event-sample"><tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Subscribed calendars (calendarList)</h2>
+      <p class="lede">Grok box #1 — “See the list of Google Calendars that you’re subscribed to.”</p>
+      <div style="overflow-x:auto;margin-top:0.8rem">
+        <table>
+          <thead><tr><th>Calendar</th><th>Id</th><th>Role</th></tr></thead>
+          <tbody id="cal-rows"><tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Azure Key Vault <code>dp-kv-deliverypilot</code></h2>
+      <p class="lede">Read at deploy time only (<code>npm run deploy:azure</code>). Values stay in process memory, then go to Wrangler stdin.</p>
+      <table>
+        <thead><tr><th>Secret name</th><th>Used for</th><th>Lives after deploy</th></tr></thead>
+        <tbody>
+          <tr><td><code>cloudflare-api-token</code></td><td>Wrangler deploy</td><td>Nowhere (env only)</td></tr>
+          <tr><td><code>cloudflare-account-id</code></td><td>Wrangler account scope</td><td>Nowhere (env only)</td></tr>
+          <tr><td><code>gcp-service-account-json</code></td><td>Google Calendar JWT</td><td>Cloudflare Worker secret <code>GOOGLE_SERVICE_ACCOUNT_JSON</code></td></tr>
+        </tbody>
+      </table>
+      <div class="ok-note" style="margin-top:1rem">The build script fails if a PEM, <code>private_key</code>, or hardcoded token appears in source.</div>
+    </section>
+
+    <section class="card">
+      <h2>Google Calendar share vs Grok boxes</h2>
+      <p class="lede">Grok’s OAuth boxes and this Worker’s service-account ACL are different doors to the same calendar. Both have to be open for a full backup of titles. Writer is only required to restore or edit.</p>
+      <table>
+        <thead><tr><th>Share setting</th><th>accessRole</th><th>Grok boxes covered</th></tr></thead>
+        <tbody>
+          <tr><td>See only free/busy</td><td><code>freeBusyReader</code></td><td>Availability only</td></tr>
+          <tr><td>See all event details</td><td><code>reader</code></td><td>List + view + download (not edit)</td></tr>
+          <tr><td>Make changes to events</td><td><code>writer</code></td><td>Select all — including edit</td></tr>
+        </tbody>
+      </table>
+      <div class="note" style="margin-top:1rem">Do not paste service-account JSON or tokens into git. Rotate by updating <code>gcp-service-account-json</code> in Key Vault and re-running <code>npm run deploy:azure</code>.</div>
+    </section>
+
+    <p class="footer">Probe JSON: <a href="/api/permissions/check">/api/permissions/check</a> · <a href="/push">Push console</a></p>
+  </div>
+  <script>
+    const MARK = { pass: "✅", partial: "⚠️", fail: "❌" };
+    const LABEL = { pass: "Granted", partial: "Partial", fail: "Missing" };
+
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+    function when(slot) {
+      if (!slot) return "—";
+      if (slot.date && !slot.dateTime) return slot.date + " all-day";
+      const d = new Date(slot.dateTime || slot.date);
+      if (Number.isNaN(d.getTime())) return slot.dateTime || slot.date;
+      return d.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    }
+
+    fetch("/api/permissions/check")
+      .then((r) => r.json())
+      .then((data) => {
+        const live = document.getElementById("live");
+        const role = data.accessRole || "unknown";
+        const cls = data.canWrite ? "ok" : data.canReadDetails ? "ok" : "warn";
+        live.innerHTML = `
+          <span class="badge blue">${escapeHtml(data.calendarId)}</span>
+          <span class="badge ${cls}">${escapeHtml(role)}</span>
+          <span class="badge">${escapeHtml(data.serviceAccount || "")}</span>
+          <span class="badge">${data.events?.allEventsVisible ? "all events visible" : "not all event details"}</span>`;
+
+        const sel = document.getElementById("select-all");
+        sel.className = "select-all " + (data.grok?.selectAll ? "ok-note" : "note");
+        sel.style.borderLeft = "none";
+        sel.innerHTML = data.grok?.selectAll
+          ? "<span>☑️ Select all — every Grok Calendar box passes.</span><span class=\"badge ok\">pass</span>"
+          : "<span>Select all is not fully granted. View/download can pass on reader ACL; edit needs writer.</span><span class=\"badge warn\">incomplete</span>";
+
+        document.getElementById("checks").innerHTML = (data.checks || []).map((c) => `
+          <div class="check-item ${escapeHtml(c.status)}">
+            <div class="check-mark">${MARK[c.status] || "•"}</div>
+            <div>
+              <h3>${escapeHtml(c.grokLabel)}</h3>
+              <p>${escapeHtml(c.detail)}</p>
+              <div class="scope">${escapeHtml(c.scope)} · ${escapeHtml(c.api)}</div>
+            </div>
+            <span class="badge ${c.status === "pass" ? "ok" : c.status === "partial" ? "warn" : "bad"}">${LABEL[c.status] || c.status}</span>
+          </div>`).join("");
+
+        const ev = data.events || {};
+        const verdict = document.getElementById("events-verdict");
+        if (ev.allEventsVisible) {
+          verdict.innerHTML = `<strong>Yes.</strong> All <code>${ev.count}</code> events in the next 14 days expose titles (0 busy-hidden). Snapshots will include names, not just Busy.`;
+        } else if (data.canReadDetails) {
+          verdict.innerHTML = `Reader ACL is on, but <code>${ev.titled}/${ev.count}</code> events have titles (${ev.busyOnly} still Busy).`;
+        } else {
+          verdict.innerHTML = `<strong>No.</strong> accessRole=<code>${escapeHtml(role)}</code> hides titles. Share the calendar as “See all event details”.`;
+        }
+
+        document.getElementById("event-stats").innerHTML = `
+          <div class="stat"><div class="label">Events (14d)</div><div class="value">${ev.count ?? "—"}</div><div class="sub">window from now</div></div>
+          <div class="stat"><div class="label">With titles</div><div class="value">${ev.titled ?? "—"}</div><div class="sub">${ev.busyOnly || 0} busy-only</div></div>
+          <div class="stat"><div class="label">All visible?</div><div class="value">${ev.allEventsVisible ? "Yes" : "No"}</div><div class="sub">${ev.truncated ? "list truncated" : "full page"}</div></div>`;
+
+        const sample = ev.sample || [];
+        document.getElementById("event-sample").innerHTML = sample.length
+          ? sample.map((e) => `<tr>
+              <td>${escapeHtml(when(e.start))}</td>
+              <td>${escapeHtml(e.summary || "Busy")}</td>
+              <td><span class="badge ${e.busy ? "warn" : "ok"}">${e.busy ? "hidden" : "visible"}</span></td>
+            </tr>`).join("")
+          : '<tr><td colspan="3" style="color:var(--muted)">No events in window.</td></tr>';
+
+        const cals = data.calendars || [];
+        document.getElementById("cal-rows").innerHTML = cals.length
+          ? cals.map((c) => `<tr>
+              <td>${escapeHtml(c.summary || c.id)}</td>
+              <td><code>${escapeHtml(c.id)}</code></td>
+              <td><span class="badge">${escapeHtml(c.accessRole || "")}</span></td>
+            </tr>`).join("")
+          : '<tr><td colspan="3" style="color:var(--muted)">calendarList is empty. The target calendar can still be opened by id.</td></tr>';
+      })
+      .catch((err) => {
+        document.getElementById("checks").innerHTML =
+          `<div class="check-item fail"><div class="check-mark">❌</div><div><h3>Check failed</h3><p>${escapeHtml(err.message)}</p></div></div>`;
+      });
+  </script>
+</body>
+</html>

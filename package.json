@@ -1,0 +1,29 @@
+{
+  "name": "pexabo-calendar-backup",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Cloudflare Worker POC: backup and manage Google Calendar events for info@pexabo.com via REST + MCP, with Azure Key Vault JIT deploy.",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "node scripts/build.js",
+    "deploy": "wrangler deploy",
+    "deploy:azure": "bash scripts/deploy-with-kv.sh"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "google-calendar",
+    "mcp",
+    "azure-keyvault",
+    "pexabo"
+  ],
+  "author": "Rifat Erdem Sahin",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "wrangler": "^4.123.0"
+  }
+}

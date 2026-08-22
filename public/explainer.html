@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Explainer · Pexabo Calendar Backup</title>
+  <meta name="description" content="How the Pexabo calendar backup Worker works: Google Calendar, Cloudflare KV snapshots, REST APIs, and MCP JSON-RPC tools.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <nav class="nav-bar">
+      <a class="nav-brand" href="/">📅 Pexabo Calendar</a>
+      <div class="nav-links">
+        <a class="nav-link" href="/push">Push</a>
+        <a class="nav-link active" href="/explainer">Explainer</a>
+        <a class="nav-link" href="/architecture">Architecture</a>
+        <a class="nav-link" href="/permissions">Permissions</a>
+      </div>
+    </nav>
+
+    <section class="card">
+      <p class="kicker">Proof of concept</p>
+      <h1>What this Worker is for</h1>
+      <p class="lede">Pexabo’s production calendar lives at <strong>info@pexabo.com</strong> (“Pexabo Team”, Europe/London). This app is an edge-native backup + management console: it reads events through the Google Calendar API, stores point-in-time snapshots in Cloudflare KV, and exposes the same operations as REST and as MCP JSON-RPC so an agent (or curl) can drive it.</p>
+    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <h2>Why backup calendar events?</h2>
+        <ul class="clean">
+          <li>Google Calendar is the system of record — it is not a durable archive.</li>
+          <li>Recurring series, deletions, and ACL changes can hide history.</li>
+          <li>A KV snapshot is a portable JSON + ICS copy you can grep, restore, or hand to an agent.</li>
+          <li>The Worker runs next to the user on 300+ Cloudflare cities — no always-on VM.</li>
+        </ul>
+      </section>
+      <section class="card">
+        <h2>What a snapshot contains</h2>
+        <ul class="clean">
+          <li>Event id, iCal UID, status, start/end, timezone, htmlLink, visibility, updated time.</li>
+          <li>Summary, description, location, attendees — <em>when</em> the service account is a reader or writer.</li>
+          <li>Today the shared ACL is <code>freeBusyReader</code>, so titles render as <strong>Busy</strong>. Upgrade sharing on the Permissions page to unlock details.</li>
+          <li>ICS download at <code>/api/backups/&lt;id&gt;.ics</code>.</li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Two control planes, one Worker</h2>
+      <p class="lede">Every mutating action on the Push page is just a fetch against these contracts. Use whichever your agent prefers.</p>
+
+      <h3>REST API</h3>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>GET</code></td><td><code>/api/health</code></td><td>Edge diagnostics (colo, country, runtime)</td></tr>
+            <tr><td><code>GET</code></td><td><code>/api/calendar</code></td><td>Calendar metadata + current accessRole</td></tr>
+            <tr><td><code>GET</code></td><td><code>/api/events</code></td><td>List events (<code>timeMin</code>, <code>timeMax</code>, <code>maxResults</code>)</td></tr>
+            <tr><td><code>POST</code></td><td><code>/api/events</code></td><td>Create event (writer ACL)</td></tr>
+            <tr><td><code>GET/PATCH/DELETE</code></td><td><code>/api/events/:id</code></td><td>Read / update / delete one event</td></tr>
+            <tr><td><code>POST</code></td><td><code>/api/backup</code></td><td>Snapshot the window into KV</td></tr>
+            <tr><td><code>GET</code></td><td><code>/api/backups</code></td><td>Index of snapshots</td></tr>
+            <tr><td><code>GET</code></td><td><code>/api/backups/:id</code></td><td>Full JSON snapshot</td></tr>
+            <tr><td><code>GET</code></td><td><code>/api/backups/:id.ics</code></td><td>ICS export</td></tr>
+            <tr><td><code>POST</code></td><td><code>/api/backups/:id/restore</code></td><td>Re-create events (writer ACL)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <pre>curl -s https://HOST/api/events | jq '.items | length'
+curl -s -X POST https://HOST/api/backup \
+  -H 'content-type: application/json' \
+  -d '{"timeMin":"2026-08-22T00:00:00Z","timeMax":"2026-09-05T00:00:00Z"}'</pre>
+    </section>
+
+    <section class="card">
+      <h3>MCP JSON-RPC</h3>
+      <p class="lede">POST <code>/mcp</code> with JSON-RPC 2.0. Compatible with MCP <code>initialize</code>, <code>tools/list</code>, and <code>tools/call</code>. Tools can also be invoked directly as method names.</p>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Tool</th><th>Does</th></tr></thead>
+          <tbody>
+            <tr><td><code>calendar_status</code></td><td>ACL, timezone, service account email</td></tr>
+            <tr><td><code>calendar_list_events</code></td><td>List the Pexabo Team calendar</td></tr>
+            <tr><td><code>calendar_get_event</code></td><td>Fetch one event by id</td></tr>
+            <tr><td><code>calendar_create_event</code></td><td>Insert (needs writer)</td></tr>
+            <tr><td><code>calendar_update_event</code></td><td>Patch (needs writer)</td></tr>
+            <tr><td><code>calendar_delete_event</code></td><td>Delete (needs writer)</td></tr>
+            <tr><td><code>calendar_backup</code></td><td>Write a KV snapshot, return backup id</td></tr>
+            <tr><td><code>calendar_list_backups</code></td><td>Index</td></tr>
+            <tr><td><code>calendar_get_backup</code></td><td>Full snapshot</td></tr>
+            <tr><td><code>calendar_restore_backup</code></td><td>Replay events onto the calendar</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pre>{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "calendar_backup",
+    "arguments": { "timeMin": "2026-08-22T00:00:00Z", "timeMax": "2026-09-05T00:00:00Z" }
+  }
+}</pre>
+      <p class="lede" style="margin-top:0.8rem">Discover tools: <code>GET /mcp</code> or <code>POST /mcp</code> with <code>{"method":"tools/list"}</code>. The Push page Command studio can fire both REST and MCP without leaving the browser.</p>
+    </section>
+
+    <section class="card">
+      <h2>Cost</h2>
+      <p class="lede">Designed to stay on the Cloudflare Workers <strong>Free plan: 100,000 requests/day, $0/month</strong>. KV writes are 1,000/day on free tier — plenty for a handful of daily snapshots. Azure Key Vault is only touched at deploy time (~$0.03 / 10k operations).</p>
+    </section>
+
+    <p class="footer">Next: <a href="/architecture">Architecture</a> · <a href="/permissions">Permissions</a> · <a href="/push">Push a backup</a></p>
+  </div>
+</body>
+</html>

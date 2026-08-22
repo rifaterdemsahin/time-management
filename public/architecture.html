@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture · Pexabo Calendar Backup</title>
+  <meta name="description" content="Edge architecture for Pexabo calendar backup: Azure Key Vault JIT secrets, Cloudflare Worker V8 isolates, Google Calendar API, KV snapshots.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <nav class="nav-bar">
+      <a class="nav-brand" href="/">📅 Pexabo Calendar</a>
+      <div class="nav-links">
+        <a class="nav-link" href="/push">Push</a>
+        <a class="nav-link" href="/explainer">Explainer</a>
+        <a class="nav-link active" href="/architecture">Architecture</a>
+        <a class="nav-link" href="/permissions">Permissions</a>
+      </div>
+    </nav>
+
+    <section class="card">
+      <p class="kicker">System design</p>
+      <h1>Edge backup, zero plaintext secrets</h1>
+      <p class="lede">Deploy credentials never touch git. Runtime credentials never touch disk. The Worker is a single V8 isolate that speaks Google Calendar and stores snapshots in KV.</p>
+    </section>
+
+    <section class="card">
+      <h2>Deploy path (JIT from Azure Key Vault)</h2>
+      <div class="arch">
+        <div class="arch-box">
+          <strong>Azure Key Vault · dp-kv-deliverypilot</strong>
+          Secrets (names only): <code>cloudflare-api-token</code>, <code>cloudflare-account-id</code>, <code>gcp-service-account-json</code>
+        </div>
+        <div class="arrow">▼ npm run deploy:azure · in-memory env only</div>
+        <div class="arch-box">
+          <strong>Wrangler on the operator laptop / CI</strong>
+          1. <code>az keyvault secret show</code> → process env<br>
+          2. <code>npm run build</code> (file + anti-secret scan)<br>
+          3. <code>wrangler deploy</code> HTML + Worker<br>
+          4. stdin pipe → <code>wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON</code>
+        </div>
+        <div class="arrow">▼ TLS to Cloudflare API · no .env file written</div>
+        <div class="arch-box">
+          <strong>Cloudflare account contact@rifaterdemsahin.com</strong>
+          Worker <code>pexabo-calendar-backup</code> + KV binding <code>BACKUPS</code> + encrypted Worker secret
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Runtime path (every request)</h2>
+      <div class="flow">
+        <div class="flow-step">
+          <div class="flow-num">1</div>
+          <div><strong>Browser or agent</strong> hits <code>/</code> (Push UI), <code>/api/*</code>, or <code>POST /mcp</code> on the nearest Cloudflare colo.</div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">2</div>
+          <div><strong>Worker isolate</strong> signs a Google JWT (RS256, WebCrypto) with the service-account private key held in the Worker secret store.</div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">3</div>
+          <div><strong>Google Calendar API</strong> <code>calendars/info@pexabo.com/events</code> — list, get, insert, patch, delete according to ACL.</div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">4</div>
+          <div><strong>Cloudflare KV <code>BACKUPS</code></strong> stores snapshot JSON (<code>backup:&lt;id&gt;</code>) and a rolling index of the last 50 backups.</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <h2>Why Workers, not a VM</h2>
+        <ul class="clean">
+          <li>Sub-5ms cold starts (V8 isolates, not containers).</li>
+          <li>Anycast: one URL, 300+ cities, no region pinning.</li>
+          <li>Free tier covers 100k req/day — this POC will not leave it.</li>
+          <li>HTML is bundled as text modules; one deploy ships UI + API.</li>
+        </ul>
+      </section>
+      <section class="card">
+        <h2>Trust boundaries</h2>
+        <ul class="clean">
+          <li><strong>Git / GitHub:</strong> source only. <code>.gitignore</code> blocks <code>.env</code>, <code>.dev.vars</code>, PEMs, SA JSON.</li>
+          <li><strong>Azure KV:</strong> source of truth for deploy + Google credentials.</li>
+          <li><strong>Cloudflare secret store:</strong> runtime copy of the SA JSON, never logged.</li>
+          <li><strong>KV:</strong> calendar snapshots (event payloads), not credentials.</li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Repo layout</h2>
+      <pre>src/index.js          routes HTML + /api + /mcp
+src/google.js         JWT + Calendar REST client
+src/calendar-api.js   REST handlers + ICS export
+src/mcp.js            JSON-RPC tools/list + tools/call
+public/*.html         Push, Explainer, Architecture, Permissions
+scripts/deploy-with-kv.sh   JIT Azure → Wrangler
+scripts/build.js      validate files, reject plaintext secrets</pre>
+    </section>
+
+    <section class="card">
+      <h2>Free-tier budget</h2>
+      <table>
+        <thead><tr><th>Resource</th><th>Free quota</th><th>This POC</th></tr></thead>
+        <tbody>
+          <tr><td>Workers requests</td><td>100,000 / day</td><td>UI + API + MCP</td></tr>
+          <tr><td>Workers CPU</td><td>10 ms / req (free)</td><td>JWT sign + fetch</td></tr>
+          <tr><td>KV reads</td><td>100,000 / day</td><td>index + snapshot get</td></tr>
+          <tr><td>KV writes</td><td>1,000 / day</td><td>one write per backup</td></tr>
+          <tr><td>Google Calendar</td><td>1M queries / day (default)</td><td>list + occasional write</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <p class="footer">Next: <a href="/permissions">Permissions &amp; ACL</a></p>
+  </div>
+</body>
+</html>

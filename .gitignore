@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Cloudflare / Wrangler
+.wrangler/
+dist/
+
+# Environment and secrets — never commit
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+*.local
+*.pem
+*.p12
+service-account*.json
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.wrangler/logs/
+
+# OS metadata
+.DS_Store
+Thumbs.db
